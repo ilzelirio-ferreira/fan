@@ -1,0 +1,68 @@
+name: Build Ventilador ESP-Matter
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Test fan logic and portal validation
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror fan/tests/fan_test.cpp -o /tmp/fan_test
+          /tmp/fan_test
+          g++ -std=c++17 -Wall -Wextra -Werror fan/tests/web_helpers_test.cpp -o /tmp/web_helpers_test
+          /tmp/web_helpers_test
+          g++ -std=c++17 -Wall -Wextra -Werror fan/tests/pairing_identity_test.cpp -o /tmp/pairing_identity_test
+          /tmp/pairing_identity_test
+
+      - name: Pull ESP-Matter Docker image
+        run: docker pull espressif/esp-matter@sha256:7b2a78ea4ca3d9a291a7fb0058c55b2aa8dddb4880255d65c4d0e19459affc7d
+
+      - name: Build
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/project" \
+            -w /project \
+            -e IDF_PATH=/opt/espressif/esp-idf \
+            -e IDF_TOOLS_PATH=/opt/espressif/tools \
+            -e ESP_MATTER_PATH=/opt/espressif/esp-matter \
+            -e NINJA_JOBS=4 \
+            espressif/esp-matter@sha256:7b2a78ea4ca3d9a291a7fb0058c55b2aa8dddb4880255d65c4d0e19459affc7d \
+            bash -c "cd /project/fan && python3 tools/fix_chip_usb_cdc.py && python3 tools/fix_idf_usb_cdc.py && idf.py set-target esp32s2 && idf.py build"
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: fan-firmware
+          path: |
+            fan/build/fan.bin
+            fan/build/fan.elf
+            fan/build/fan.map
+            fan/build/bootloader/bootloader.bin
+            fan/build/partition_table/partition-table.bin
+            fan/build/ota_data_initial.bin
+            fan/build/flasher_args.json
+            fan/build/flash_args
+          if-no-files-found: error
+
+      - name: Publish latest OTA firmware
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_tag="firmware-${GITHUB_SHA:0:7}"
+          gh release create "$release_tag" fan/build/fan.bin --target "$GITHUB_SHA" --title "Firmware ${GITHUB_SHA:0:7}" --notes "Firmware ESP32-S2 Ventilador. Arquivo fan.bin para atualizacao OTA pelo painel." --draft
+          gh release edit "$release_tag" --draft=false --latest

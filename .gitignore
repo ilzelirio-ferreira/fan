@@ -1,0 +1,6 @@
+/fan/build/
+/fan/sdkconfig
+/fan/sdkconfig.old
+/fan/managed_components/
+/fan/dependencies.lock
+__pycache__/
