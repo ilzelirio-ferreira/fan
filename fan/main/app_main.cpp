@@ -5,6 +5,7 @@
 #include <atomic>
 #include <stdio.h>
 
+#include <app/clusters/fan-control-server/CodegenIntegration.h>
 #include <app/server/CommissioningWindowManager.h>
 #include <app/server/Server.h>
 #include <driver/gpio.h>
@@ -19,7 +20,7 @@
 
 using namespace esp_matter;
 namespace fc = chip::app::Clusters::FanControl;
-namespace fa = fc::Attributes;
+using chip::Protocols::InteractionModel::Status;
 
 static constexpr char kTag[] = "fan";
 static constexpr gpio_num_t kButton = GPIO_NUM_33;
@@ -30,8 +31,6 @@ static constexpr int64_t kRelayReleaseUs = 30000;
 static uint16_t fan_id;
 // Matter callbacks and the scheduled relay work run in the CHIP task.
 static uint8_t requested_speed;
-static bool publish_pending = true;
-static bool publishing;
 static std::atomic<unsigned> button_presses{0};
 static std::atomic<bool> work_scheduled{false};
 
@@ -57,68 +56,22 @@ static void drive_relays(uint8_t code)
     ESP_ERROR_CHECK(gpio_set_level(kRelayLsb, code & 1U));
 }
 
-static esp_err_t on_attribute(attribute::callback_type_t type, uint16_t endpoint_id,
-                              uint32_t cluster_id, uint32_t attr_id, esp_matter_attr_val_t *value, void *)
-{
-    if (publishing || type != attribute::PRE_UPDATE || fan_id == 0 || endpoint_id != fan_id || cluster_id != fc::Id) {
-        return ESP_OK;
+class FanDelegate final : public fc::Delegate {
+public:
+    Status HandleStep(fc::StepDirectionEnum, bool, bool) override
+    {
+        return Status::UnsupportedCommand;
     }
 
-    const uint8_t raw = value->val.u8;
-    switch (attr_id) {
-    case fa::FanMode::Id:
-        // Low, Medium and High use the same ordinals as the relay code.
-        if (raw > static_cast<uint8_t>(fc::FanModeEnum::kOn)) {
-            return ESP_ERR_INVALID_ARG;
-        }
-        requested_speed = raw == static_cast<uint8_t>(fc::FanModeEnum::kOn) ? 3 : raw;
-        break;
-    case fa::SpeedSetting::Id:
-        if (raw > 3) {
-            return ESP_ERR_INVALID_ARG;
-        }
-        requested_speed = raw;
-        break;
-    case fa::PercentSetting::Id:
-        if (raw > 100) {
-            return ESP_ERR_INVALID_ARG;
-        }
-        requested_speed = speed_from_percent(raw);
-        break;
-    default:
-        return ESP_OK;
-    }
-    publish_pending = true;
-    return ESP_OK;
-}
-
-static bool publish_speed(uint8_t speed)
-{
-    struct AttributeValue {
-        uint32_t id;
-        esp_matter_attr_val_t value;
-    };
-    const uint8_t percent = percent_from_speed(speed);
-    AttributeValue values[] = {
-        {fa::SpeedSetting::Id, esp_matter_nullable_uint8(speed)},
-        {fa::PercentSetting::Id, esp_matter_nullable_uint8(percent)},
-        {fa::FanMode::Id, esp_matter_enum8(speed)},
-        {fa::SpeedCurrent::Id, esp_matter_uint8(speed)},
-        {fa::PercentCurrent::Id, esp_matter_uint8(percent)},
-    };
-
-    publishing = true;
-    bool success = true;
-    for (auto &entry : values) {
-        const esp_err_t err = attribute::update(fan_id, fc::Id, entry.id, &entry.value);
-        if (err != ESP_OK) {
-            ESP_LOGW(kTag, "Attribute 0x%lx: %s", static_cast<unsigned long>(entry.id), esp_err_to_name(err));
-            success = false;
+    void OnFanDriveStateChanged(const fc::FanDriveState &state) override
+    {
+        if (!state.speedSetting.IsNull()) {
+            requested_speed = state.speedSetting.Value();
         }
     }
-    publishing = false;
-    return success;
-}
+};
+
+static FanDelegate fan_delegate;
 
 static esp_err_t on_identify(identification::callback_type_t, uint16_t, uint8_t, uint8_t, void *)
 {
@@ -147,12 +100,23 @@ static void process_fan(intptr_t)
 {
     static uint8_t relay_code = 0;
     static int64_t relay_ready_us = 0;
+    static chip::app::Clusters::FanControlCluster *control = nullptr;
+    if (!control) {
+        control = fc::FindClusterOnEndpoint(fan_id);
+        ESP_ERROR_CHECK(control ? ESP_OK : ESP_FAIL);
+        fc::SetDefaultDelegate(fan_id, &fan_delegate);
+        // The SDK persists FanMode; the motor must start off after any reboot.
+        ESP_ERROR_CHECK(control->SetFanMode(fc::FanModeEnum::kOff) == Status::Success ? ESP_OK : ESP_FAIL);
+    }
     const int64_t now = esp_timer_get_time();
 
     const unsigned presses = button_presses.exchange(0);
     if (presses) {
-        requested_speed = next_speed(requested_speed, presses);
-        publish_pending = true;
+        const uint8_t speed = next_speed(requested_speed, presses);
+        const Status status = control->SetSpeedSetting(chip::app::DataModel::MakeNullable(speed));
+        if (status != Status::Success) {
+            ESP_LOGW(kTag, "Falha ao atualizar velocidade Matter: %u", static_cast<unsigned>(status));
+        }
     }
 
     // Drop outgoing contacts before enabling new ones on a transition such as 01 -> 10.
@@ -166,8 +130,9 @@ static void process_fan(intptr_t)
         drive_relays(requested_speed);
         relay_code = requested_speed;
     }
-    if (publish_pending && relay_code == requested_speed) {
-        publish_pending = !publish_speed(relay_code);
+    if (relay_code == requested_speed && control->GetSpeedCurrent() != relay_code) {
+        control->SetSpeedCurrent(relay_code);
+        control->SetPercentCurrent(percent_from_speed(relay_code));
     }
     work_scheduled.store(false);
 }
@@ -182,7 +147,7 @@ extern "C" void app_main()
     node::config_t node_config;
     snprintf(node_config.root_node.basic_information.node_label,
              sizeof(node_config.root_node.basic_information.node_label), "%s", app_portal_module_name());
-    auto *node = node::create(&node_config, on_attribute, on_identify);
+    auto *node = node::create(&node_config, nullptr, on_identify);
     ESP_ERROR_CHECK(node ? ESP_OK : ESP_FAIL);
 
     endpoint::fan::config_t config;

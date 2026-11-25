@@ -2,11 +2,6 @@
 
 #include <stdint.h>
 
-constexpr uint8_t speed_from_percent(uint8_t percent)
-{
-    return (3U * percent + 99U) / 100U;
-}
-
 constexpr uint8_t percent_from_speed(uint8_t speed)
 {
     return 100U * speed / 3U;

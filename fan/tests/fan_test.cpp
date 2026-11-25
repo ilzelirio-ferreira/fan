@@ -5,14 +5,12 @@ int main()
 {
     for (uint8_t speed = 0; speed <= 3; ++speed) {
         assert(next_speed(speed) == (speed + 1) % 4);
-        assert(speed_from_percent(percent_from_speed(speed)) == speed);
     }
-    assert(speed_from_percent(1) == 1);
-    assert(speed_from_percent(33) == 1);
-    assert(speed_from_percent(34) == 2);
-    assert(speed_from_percent(66) == 2);
-    assert(speed_from_percent(67) == 3);
-    assert(speed_from_percent(100) == 3);
+    assert(next_speed(3, 2) == 1);
+    assert(percent_from_speed(0) == 0);
+    assert(percent_from_speed(1) == 33);
+    assert(percent_from_speed(2) == 66);
+    assert(percent_from_speed(3) == 100);
 
     FanButton button;
     assert(!button.sample(true, 0));
