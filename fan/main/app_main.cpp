@@ -99,6 +99,7 @@ static void on_matter_event(const ChipDeviceEvent *event, intptr_t)
 static void process_fan(intptr_t)
 {
     static uint8_t relay_code = 0;
+    static int last_reported_speed = -1;
     static int64_t relay_ready_us = 0;
     static chip::app::Clusters::FanControlCluster *control = nullptr;
     if (!control) {
@@ -133,6 +134,12 @@ static void process_fan(intptr_t)
     if (relay_code == requested_speed && control->GetSpeedCurrent() != relay_code) {
         control->SetSpeedCurrent(relay_code);
         control->SetPercentCurrent(percent_from_speed(relay_code));
+    }
+    if (relay_code == requested_speed && relay_code != last_reported_speed) {
+        ESP_LOGI(kTag, "Estado V%u (%u%%) | Rele A=%u | Rele B=%u",
+                 static_cast<unsigned>(relay_code), static_cast<unsigned>(percent_from_speed(relay_code)),
+                 (relay_code >> 1) & 1U, relay_code & 1U);
+        last_reported_speed = relay_code;
     }
     work_scheduled.store(false);
 }

@@ -27,6 +27,10 @@ Use entradas de módulos de relé compatíveis com lógica de 3,3 V e mantenha a
 4. No app Alexa, verifique se o dispositivo foi identificado como ventilador. Experimente “Alexa, ajuste o ventilador para 33 por cento”, “66 por cento” e “100 por cento”. O nome padrão é **Ventilador**.
 5. Verifique se o botão funciona com o Wi-Fi desconectado e se a Alexa acompanha as mudanças locais quando a rede está disponível.
 
+## Monitoramento serial
+
+Abra o monitor serial da porta USB do ESP32-S2 a 115200 baud. O firmware registra o estado inicial e as mudanças de velocidade aplicadas pelo botão ou pelo Matter. Por exemplo, `Estado V2 (66%) | Rele A=1 | Rele B=0`. Os valores mostram os níveis comandados nos GPIOs.
+
 ## Compilação e gravação
 
 O GitHub Actions compila para `esp32s2` com a mesma imagem ESP-Matter usada na compilação do doorBell. O artefato **fan-firmware** inclui o aplicativo, bootloader, tabela de partições e argumentos de gravação. Na primeira gravação, extraia o artefato e execute no diretório que contém `flash_args`, substituindo `COM5` pela porta da placa:
